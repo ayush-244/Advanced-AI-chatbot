@@ -10,6 +10,7 @@ class ChatBot:
         self.tokenizer = AutoTokenizer.from_pretrained(
             "microsoft/DialoGPT-small"
         )
+        self.tokenizer.pad_token = self.tokenizer.eos_token
 
         self.model = AutoModelForCausalLM.from_pretrained(
             "microsoft/DialoGPT-small"
@@ -20,20 +21,31 @@ class ChatBot:
 
     def get_reply(self, text):
 
-        inputs = self.tokenizer.encode(
+        inputs = self.tokenizer(
             text + self.tokenizer.eos_token,
-            return_tensors="pt"
+            return_tensors="pt",
+            padding=True,
+            truncation=True
         )
 
         output = self.model.generate(
-            inputs,
-            max_length=100,
-            pad_token_id=self.tokenizer.eos_token_id
+            inputs["input_ids"],
+            attention_mask=inputs["attention_mask"],
+            max_length=150,
+            do_sample=True,
+            top_k=50,
+            top_p=0.95,
+            temperature=0.7,
+            pad_token_id=self.tokenizer.eos_token_id,
+            no_repeat_ngram_size=2
         )
 
         reply = self.tokenizer.decode(
             output[0],
             skip_special_tokens=True
         )
+
+        if reply.lower().startswith(text.lower()):
+            reply = reply[len(text):].strip()
 
         return reply
