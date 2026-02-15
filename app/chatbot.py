@@ -4,18 +4,15 @@ from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 
 from app.language import LanguageProcessor
 from app.retriever import WikiRetriever
+from app.memory import ChatMemory
 
 
-# -----------------------------
-# MAIN CHATBOT
-# -----------------------------
 class ChatBot:
 
     def __init__(self):
 
-        print("Loading AI model (FLAN-T5-Large)...")
+        print("Loading AI model...")
 
-        # Load Instruction Model
         self.tokenizer = AutoTokenizer.from_pretrained(
             "google/flan-t5-large"
         )
@@ -26,65 +23,105 @@ class ChatBot:
 
         self.model.eval()
 
-        # Initialize helpers
         self.lang = LanguageProcessor()
         self.retriever = WikiRetriever()
+        self.memory = ChatMemory()
 
-        print("Model loaded successfully!")
+        print("Model loaded successfully.")
 
 
     def get_reply(self, text: str) -> str:
 
-        # -----------------------------
-        # Step 1: Detect Language
-        # -----------------------------
         user_lang = self.lang.detect_lang(text)
 
-
-        # -----------------------------
-        # Step 2: Translate to English
-        # -----------------------------
         english_text = self.lang.to_english(text, user_lang)
 
+        history = self.memory.get_last_messages()
 
-        # -----------------------------
-        # Step 3: Retrieve Context
-        # -----------------------------
-        context = self.retriever.search(english_text)
+        last_topic = ""
+
+        if history:
+            last_user, _ = history[-1]
+            last_topic = last_user
+
+
+        # Improve retrieval
+        search_query = english_text
+
+        if english_text.lower().startswith(
+            ("where", "when", "how", "why", "he", "she", "they")
+        ):
+            if last_topic:
+                search_query = last_topic + " " + english_text
+
+
+        context = self.retriever.search(search_query)
 
         if not context:
+
             reply = "Sorry, I could not find reliable information."
 
-            return self.lang.from_english(reply, user_lang)
+            final_reply = self.lang.from_english(reply, user_lang)
+
+            self.memory.save(text, final_reply)
+
+            return final_reply
 
 
-        # -----------------------------
-        # Step 4: Build Prompt
-        # -----------------------------
-        # Check if it's a "who is" question
-        is_who_question = english_text.lower().strip().startswith(('who is', 'who are'))
-        
+        # Build history
+        history_text = ""
+
+        for user_msg, bot_msg in history:
+            history_text += f"User: {user_msg}\n"
+            history_text += f"Bot: {bot_msg}\n"
+
+
+        is_who_question = english_text.lower().strip().startswith(
+            ("who is", "who are")
+        )
+
+
         if is_who_question:
-            prompt = f"""Using the context below, describe who this person is and what their current role or position is.
 
-Context: {context}
+            prompt = f"""
+You are a helpful AI assistant.
 
-Question: {english_text}
+Answer strictly using only the context.
+If the answer is not in context, say "I don't know".
 
-Answer:"""
+Previous conversation:
+{history_text}
+
+Context:
+{context}
+
+Question:
+{english_text}
+
+Answer:
+"""
+
         else:
-            prompt = f"""Answer the question based on the context below.
 
-Context: {context}
+            prompt = f"""
+You are a helpful AI assistant.
 
-Question: {english_text}
+Answer strictly using only the context.
+If the answer is not in context, say "I don't know".
 
-Answer:"""
+Previous conversation:
+{history_text}
+
+Context:
+{context}
+
+Question:
+{english_text}
+
+Answer:
+"""
 
 
-        # -----------------------------
-        # Step 5: Tokenize
-        # -----------------------------
         inputs = self.tokenizer(
             prompt,
             return_tensors="pt",
@@ -93,9 +130,6 @@ Answer:"""
         )
 
 
-        # -----------------------------
-        # Step 6: Generate Answer
-        # -----------------------------
         with torch.no_grad():
 
             output = self.model.generate(
@@ -110,21 +144,23 @@ Answer:"""
             )
 
 
-        # -----------------------------
-        # Step 7: Decode
-        # -----------------------------
         answer = self.tokenizer.decode(
             output[0],
             skip_special_tokens=True
         )
 
 
-        # -----------------------------
-        # Step 8: Translate Back
-        # -----------------------------
+        # Remove "Bot:" if present
+        if answer.lower().startswith("bot:"):
+            answer = answer[4:].strip()
+
+
         final_answer = self.lang.from_english(
             answer.strip(),
             user_lang
         )
+
+
+        self.memory.save(text, final_answer)
 
         return final_answer
